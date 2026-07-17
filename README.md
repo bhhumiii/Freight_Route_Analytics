@@ -269,6 +269,9 @@ The dashboard displays:
 **Project:** Freight Route Analytics & Optimization using Machine Learning
 
 ---
+## 🚀 Live Demo
+
+🌐 https://freightrouteanalytics-sperqd3qkldpmqld3ntb9k.streamlit.app/
 
 # 👩‍💻 Author
 
