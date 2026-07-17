@@ -1,0 +1,6 @@
+__pycache__/
+*.pyc
+data/railrake.csv
+data/ALL_RAKES_CYCL_FY2526_APR_FEB.csv
+data/processed.pkl
+catboost_info/
