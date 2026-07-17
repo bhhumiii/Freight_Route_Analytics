@@ -1,0 +1,18 @@
+# Python
+__pycache__/
+*.pyc
+
+# Virtual environments
+.venv/
+venv/
+
+# Large data
+data/*.xlsx
+data/*.csv
+data/*.pkl
+
+# Temporary Excel files
+~$*.xlsx
+
+# Streamlit secrets
+.streamlit/secrets.toml
