@@ -6,17 +6,17 @@ graph for path finding.
 """
 import pandas as pd
 import numpy as np
-import pickle, os
+import pickle
+import os
 
 import config as C
 
-DATA_DIR    = C.DATA_DIR
-PROC_PKL    = C.PROC_PKL
-GRAPH_PKL   = C.GRAPH_PKL
-SMAP_PKL    = C.SMAP_PKL
+DATA_DIR = C.DATA_DIR
+PROC_PKL = C.PROC_PKL
+GRAPH_PKL = C.GRAPH_PKL
+SMAP_PKL = C.SMAP_PKL
 OUTLIER_PKL = os.path.join(DATA_DIR, "outlier_report.pkl")
-COORDS_CSV = os.path.join(DATA_DIR, "smartrake_station_coords.csv")
-
+COORDS_EXCEL = os.path.join(DATA_DIR, "smartrake_station_coords.xlsx")
 # Columns whose distributions we screen for outliers (numeric, physically meaningful)
 OUTLIER_COLS = [
     "ldng_uldg_km",
@@ -102,47 +102,23 @@ def load_and_clean(outlier_method="iqr", cap_outliers=True):
     df["circuit_hrs"] = df["circuittime"].apply(parse_hhmm)
 
     # ── keep only rows with the core columns present and positive ────────────
-    df = df.dropna(subset=["ldngsttn", "uldg_sttn","ldng_uldg_km", "circuit_hrs", "circuit_speed"])
-    extra_edges = df[
-    [
-        "uldg_sttn",
-        "nextldng",
-        "uldg_ldng_kms",
-        "uldg_ldng_hrs"
-    ]].dropna()
-
-    extra_edges = extra_edges.rename(
-        columns={
-            "uldg_sttn":"ldngsttn",
-            "nextldng":"uldg_sttn",
-            "uldg_ldng_kms":"ldng_uldg_km",
-            "uldg_ldng_hrs":"ldng_uldg_hor"
-        }
-        )
-
-    extra_edges["circuit_speed"] = (
-        extra_edges["ldng_uldg_km"] /
-        extra_edges["ldng_uldg_hor"]
-    )
-
-    df = pd.concat(
-        [df,extra_edges],
-        ignore_index=True
-    )
+    df = df.dropna(subset=["ldngsttn", "uldg_sttn",
+                   "ldng_uldg_km", "circuit_hrs", "circuit_speed"])
     df = df[df["ldng_uldg_km"] > 0]
-    df = df[df["circuit_hrs"]  > 0]
+    df = df[df["circuit_hrs"] > 0]
     df = df[df["circuit_speed"] > 0]
     print(f"  After clean: {len(df):,}")
 
     # avg speed loading->unloading (also an outlier-screened column)
-    df["ldng_uldg_speed"] = df["ldng_uldg_km"] / df["ldng_uldg_hor"].replace(0, np.nan)
+    df["ldng_uldg_speed"] = df["ldng_uldg_km"] / \
+        df["ldng_uldg_hor"].replace(0, np.nan)
 
     # ── outlier detection + handling ─────────────────────────────────────────
     report = outlier_summary(df, OUTLIER_COLS, method=outlier_method)
     print(f"  Outlier report ({outlier_method}):")
     for _, r in report.iterrows():
         print(f"    {r['column']:16s} {r['n_outliers']:>7,} rows "
-            f"({r['pct_outliers']:.2f}%) outside [{r['lower_fence']}, {r['upper_fence']}]")
+              f"({r['pct_outliers']:.2f}%) outside [{r['lower_fence']}, {r['upper_fence']}]")
 
     if cap_outliers:
         capped_total = 0
@@ -166,9 +142,8 @@ def load_and_clean(outlier_method="iqr", cap_outliers=True):
     df["ldngsttn"] = df["ldngsttn"].str.strip()
     df["uldg_sttn"] = df["uldg_sttn"].str.strip()
 
-    coords = pd.read_csv(COORDS_CSV)
-
-    coords["code"] = coords["code"].astype(str).str.strip()
+    coords = pd.read_excel(COORDS_EXCEL)
+    print(coords.columns.tolist())   # Temporary: remove after verifying
 
     coord_lookup = coords.set_index("code").to_dict("index")
 
@@ -206,7 +181,7 @@ def load_and_clean(outlier_method="iqr", cap_outliers=True):
 
                 "lon": float(coord_lookup[code]["longitude"])
 
-        }
+            }
 
     print(f"Matched coordinates for {len(smap)} stations.")
 
@@ -237,29 +212,29 @@ def load_and_clean(outlier_method="iqr", cap_outliers=True):
     df["weight_per_unit"] = (
         df["actlwght"] /
         (df["load_units"] + 1)
-)
+    )
 
 # Wagon utilization
     df["loading_efficiency"] = (
-    df["actlwght"] /
-    (df["chblwght"] + 1)
-)
+        df["actlwght"] /
+        (df["chblwght"] + 1)
+    )
 
 # Long route indicator
     df["long_route"] = (
         df["ldng_uldg_km"] > 700
-        ).astype(int)
+    ).astype(int)
 
 # Heavy train indicator
     df["heavy_train"] = (
-    df["actlwght"] > 3500
+        df["actlwght"] > 3500
     ).astype(int)
 
 # Time per km
     df["hrs_per_km"] = (
         df["ldng_uldg_hor"] /
         (df["ldng_uldg_km"] + 1)
-)
+    )
     # encode categoricals
     for c in C.CAT_COLS:
         df[c] = df[c].fillna("UNKNOWN").astype("category")
@@ -267,35 +242,46 @@ def load_and_clean(outlier_method="iqr", cap_outliers=True):
     return df, smap, report
 
 
-def build_graph(df):
+def build_graph(df, smap):
     """
-    Weighted directed graph:
-      node = station code
-      edge = (src -> dst) with median km / hrs / speed and a composite weight.
-    Aggregated per (ldngsttn, uldg_sttn) pair using medians.
+    Build a weighted directed graph from the processed dataframe.
+
+    Each edge represents a historical freight movement between two stations.
+    Edge attributes:
+        km      -> median distance
+        hrs     -> median travel time
+        speed   -> median speed
+        weight  -> composite routing cost
+        count   -> number of historical trips
     """
+
     print("Building route graph ...")
+
     grp = (
         df.groupby(["ldngsttn", "uldg_sttn"])
         .agg(
-            median_km    = ("ldng_uldg_km",  "median"),
-            median_hrs   = ("ldng_uldg_hor", "median"),
-            median_speed = ("circuit_speed", "median"),
-            count        = ("ldng_uldg_km",  "count"),
+            median_km=("ldng_uldg_km", "median"),
+            median_hrs=("ldng_uldg_hor", "median"),
+            median_speed=("circuit_speed", "median"),
+            count=("ldng_uldg_km", "count"),
         )
         .reset_index()
     )
 
-    # composite score (lower = better): 0.5*norm_km + 0.5*norm_hrs
+    # ---------------- Normalize ----------------
+
     def _norm(col):
-        lo, hi = col.min(), col.max()
+        lo = col.min()
+        hi = col.max()
         return (col - lo) / (hi - lo + 1e-9)
 
-    grp["norm_km"]  = _norm(grp["median_km"])
+    grp["norm_km"] = _norm(grp["median_km"])
     grp["norm_hrs"] = _norm(grp["median_hrs"])
+
+    # Composite routing weight
     grp["weight"] = (
-    0.35 * grp["norm_km"] +
-    0.65 * grp["norm_hrs"]
+        0.35 * grp["norm_km"] +
+        0.65 * grp["norm_hrs"]
     )
 
     graph = {}
@@ -305,32 +291,40 @@ def build_graph(df):
         src = str(r.ldngsttn).strip()
         dst = str(r.uldg_sttn).strip()
 
+        # Create source/destination nodes if missing
         graph.setdefault(src, {})
-        graph.setdefault(dst, {})       # prevents dead-end nodes
+        graph.setdefault(dst, {})
 
-        [src][dst] = {
+        graph[src][dst] = {
             "km": float(r.median_km),
             "hrs": float(r.median_hrs),
             "speed": float(r.median_speed),
             "weight": float(r.weight),
             "count": int(r.count),
             "from_name": smap.get(src, {}).get("name", src),
-            "to_name": smap.get(dst, {}).get("name", dst)
+            "to_name": smap.get(dst, {}).get("name", dst),
         }
 
-    print(f"  Nodes: {len(graph):,} | Edges: {sum(len(v) for v in graph.values()):,}")
+    print(
+        f"Nodes: {len(graph):,} | "
+        f"Edges: {sum(len(v) for v in graph.values()):,}"
+    )
+
     return graph
 
 
 def run(outlier_method="iqr", cap_outliers=True):
     df, smap, report = load_and_clean(outlier_method=outlier_method,
                                       cap_outliers=cap_outliers)
-    graph = build_graph(df)
-
-    with open(PROC_PKL,    "wb") as f: pickle.dump(df,     f, protocol=5)
-    with open(GRAPH_PKL,   "wb") as f: pickle.dump(graph,  f, protocol=5)
-    with open(SMAP_PKL,    "wb") as f: pickle.dump(smap,   f, protocol=5)
-    with open(OUTLIER_PKL, "wb") as f: pickle.dump(report, f, protocol=5)
+    graph = build_graph(df, smap)
+    with open(PROC_PKL,    "wb") as f:
+        pickle.dump(df,     f, protocol=5)
+    with open(GRAPH_PKL,   "wb") as f:
+        pickle.dump(graph,  f, protocol=5)
+    with open(SMAP_PKL,    "wb") as f:
+        pickle.dump(smap,   f, protocol=5)
+    with open(OUTLIER_PKL, "wb") as f:
+        pickle.dump(report, f, protocol=5)
     print("Saved processed.pkl, graph.pkl, station_map.pkl, outlier_report.pkl")
     return df, graph, smap
 
